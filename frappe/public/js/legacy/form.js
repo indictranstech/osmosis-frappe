@@ -167,12 +167,9 @@ _f.Frm.prototype.print_doc = function() {
 		return;
 	}
 
-	if(this.doc.docstatus==2)  {
-		msgprint(__("Cannot print cancelled documents"));
-		return;
-	}
 	this.print_preview.refresh_print_options().trigger("change");
 	this.page.set_view("print");
+	this.print_preview.set_user_lang()
 }
 
 _f.Frm.prototype.hide_print = function() {
@@ -332,10 +329,14 @@ _f.Frm.prototype.show_web_link = function() {
 	if(!doc.__islocal && doc.__onload && doc.__onload.is_website_generator) {
 		me.web_link && me.web_link.remove();
 		if(doc.__onload.published) {
-			me.web_link = me.sidebar.add_user_action("See on Website",
-				function() {}).attr("href", "/" + doc.__onload.website_route).attr("target", "_blank");
+			me.add_web_link("/" + doc.__onload.website_route)
 		}
 	}
+}
+
+_f.Frm.prototype.add_web_link = function(path) {
+	this.web_link = this.sidebar.add_user_action("See on Website",
+		function() {}).attr("href", path).attr("target", "_blank");
 }
 
 _f.Frm.prototype.check_doc_perm = function() {
@@ -379,6 +380,9 @@ _f.Frm.prototype.refresh = function(docname) {
 		// read only (workflow)
 		this.read_only = frappe.workflow.is_read_only(this.doctype, this.docname);
 
+		// set new doc name if created via link field
+		this.set_new_docname_from_link();
+
 		// check if doctype is already open
 		if (!this.opendocs[this.docname]) {
 			this.check_doctype_conflict(this.docname);
@@ -421,11 +425,27 @@ _f.Frm.prototype.refresh = function(docname) {
 	}
 }
 
+_f.Frm.prototype.set_new_docname_from_link = function() {
+	if(frappe._from_link && frappe._new_docname_from_link) {
+		frappe.model.set_value(frappe._from_link.doctype,
+			frappe._from_link.docname, frappe._from_link.df.fieldname, frappe._new_docname_from_link);
+
+		frappe._from_link.refresh();
+
+		frappe._from_link = null;
+		frappe._new_docname_from_link = null;
+	}
+}
+
 _f.Frm.prototype.show_if_needs_refresh = function() {
 	if(this.doc.__needs_refresh) {
-		this.dashboard.set_headline_alert(__("This form has been modified after you have loaded it")
-			+ '<a class="btn btn-xs btn-primary pull-right" onclick="cur_frm.reload_doc()">'
-			+ __("Refresh") + '</a>', "alert-warning");
+		if(this.doc.__unsaved) {
+			this.dashboard.set_headline_alert(__("This form has been modified after you have loaded it")
+				+ '<a class="btn btn-xs btn-primary pull-right" onclick="cur_frm.reload_doc()">'
+				+ __("Refresh") + '</a>', "alert-warning");
+		} else {
+			this.reload_doc();
+		}
 	}
 }
 
@@ -438,6 +458,7 @@ _f.Frm.prototype.render_form = function(is_a_different_doc) {
 			frm: this,
 			page: this.page
 		});
+		this.sidebar.make();
 
 		// header must be refreshed before client methods
 		// because add_custom_button
@@ -516,7 +537,10 @@ _f.Frm.prototype.cleanup_refresh = function() {
 
 	if(me.meta.autoname && me.meta.autoname.substr(0,6)=='field:' && !me.doc.__islocal) {
 		var fn = me.meta.autoname.substr(6);
-		cur_frm.toggle_display(fn, false);
+
+		if (cur_frm.doc[fn]) {
+			cur_frm.toggle_display(fn, false);
+		}
 	}
 
 	if(me.meta.autoname=="naming_series:" && !me.doc.__islocal) {
@@ -534,17 +558,6 @@ _f.Frm.prototype.setnewdoc = function() {
 		me.script_manager.trigger("onload");
 		me.opendocs[me.docname] = true;
 		me.render_form();
-		if(frappe.route_options) {
-				$.each(frappe.route_options, function(fieldname, value) {
-					try {
-						me.set_value(fieldname, value);
-					} catch (e) {
-						// pass - see error log
-					}
-				});
-
-			frappe.route_options = null;
-		}
 
 		frappe.after_ajax(function() {
 			me.trigger_link_fields();
@@ -602,7 +615,7 @@ _f.Frm.prototype.copy_doc = function(onload, from_amend) {
 	if(onload) {
 		onload(newdoc);
 	}
-	loaddoc(newdoc.doctype, newdoc.name);
+	frappe.set_route('Form', newdoc.doctype, newdoc.name);
 }
 
 _f.Frm.prototype.reload_doc = function() {
@@ -657,14 +670,12 @@ _f.Frm.prototype._save = function(save_action, callback, btn, on_error) {
 
 		if(frappe._from_link) {
 			if(me.doctype===frappe._from_link.df.options) {
-				frappe.model.set_value(frappe._from_link.doctype,
-					frappe._from_link.docname, frappe._from_link.fieldname, me.docname);
-				frappe._from_link.refresh();
-
 				frappe.set_route("Form", frappe._from_link.frm.doctype, frappe._from_link.frm.docname);
+
+				frappe._new_docname_from_link = me.docname;
+
 				setTimeout(function() { scroll(0, frappe._from_link_scrollY); }, 100);
 			}
-			frappe._from_link = null;
 		}
 	}
 
@@ -812,7 +823,7 @@ _f.Frm.prototype.reload_docinfo = function(callback) {
 		callback: function(r) {
 			// docinfo will be synced
 			if(callback) callback(r.docinfo);
-			me.comments.refresh();
+			me.timeline.refresh();
 			me.assign_to.refresh();
 			me.attachments.refresh();
 		}

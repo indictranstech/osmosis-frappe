@@ -23,6 +23,18 @@ frappe.utils = {
 		}
 		return true;
 	},
+	is_mobile: function() {
+		return frappe.utils.is_xs();
+	},
+	is_xs: function() {
+		return $(document).width() < 768;
+	},
+	is_sm: function() {
+		return $(document).width() < 991 && $(document).width() >= 768;
+	},
+	is_md: function() {
+		return $(document).width() < 1199 && $(document).width() >= 991;
+	},
 	strip_whitespace: function(html) {
 		return (html || "").replace(/<p>\s*<\/p>/g, "").replace(/<br>(\s*<br>\s*)+/g, "<br><br>");
 	},
@@ -195,7 +207,7 @@ frappe.utils = {
 		var style = default_style || "default";
 		var colour = "darkgrey";
 		if(text) {
-			if(has_words(["Pending", "Review", "Medium", "Not Approved", "Pending"], text)) {
+			if(has_words(["Pending", "Review", "Medium", "Not Approved"], text)) {
 				style = "warning";
 				colour = "orange";
 			} else if(has_words(["Open", "Urgent", "High"], text)) {
@@ -498,5 +510,22 @@ frappe.utils = {
 			// pass
 		}
 
+	},
+	split_emails: function(txt) {
+		var email_list = [];
+
+		if (!txt) {
+			return email_list;
+		}
+
+		// emails can be separated by comma or newline
+		txt.split(/[,\n](?=(?:[^"]|"[^"]*")*$)/g).forEach(function(email) {
+			email = email.trim();
+			if (email) {
+				email_list.push(email);
+			}
+		});
+
+		return email_list;
 	}
 };

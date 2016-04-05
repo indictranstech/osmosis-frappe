@@ -1,11 +1,6 @@
 // Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
 // MIT License. See license.txt
 
-// assign to is lined to todo
-// refresh - load todos
-// create - new todo
-// delete to do
-
 frappe.provide("frappe.ui.form");
 
 frappe.ui.form.AssignTo = Class.extend({
@@ -44,15 +39,13 @@ frappe.ui.form.AssignTo = Class.extend({
 			for(var i=0; i<d.length; i++) {
 				var info = frappe.user_info(d[i].owner);
 				info.owner = d[i].owner;
-				info.image = frappe.user_info(d[i].owner).image;
+				info.avatar = frappe.avatar(d[i].owner);
 				info.description = d[i].description || "";
 
 				$(repl('<li class="assignment-row">\
 					<a class="close" data-owner="%(owner)s">&times;</a>\
 					<div class="text-ellipsis" style="width: 80%">\
-						<div class="avatar avatar-small">\
-							<img class="media-object" src="%(image)s" alt="%(fullname)s">\
-						</div>\
+						%(avatar)s\
 						<span>%(fullname)s</span>\
 					</div>\
 				</li>', info))
@@ -169,7 +162,11 @@ frappe.ui.to_do_dialog = function(opts){
 				label:__("Notify by Email"), "default":1},
 			{fieldtype: 'Column Break'},
 			{fieldtype:'Select', fieldname:'priority', label: __("Priority"),
-				options:'Low\nMedium\nHigh', 'default':'Medium'},
+				options:[
+					{value: 'Low', label: __('Low')},
+					{value:'Medium', label: __('Medium')},
+					{value: 'High', label: __('High')}],
+				'default':'Medium'},
 		],
 		primary_action: function() { frappe.ui.add_assignment(opts, dialog); },
 		primary_action_label: __("Add")

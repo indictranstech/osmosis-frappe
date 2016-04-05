@@ -49,9 +49,6 @@ def _(msg, lang=None):
 	# msg should always be unicode
 	msg = cstr(msg)
 
-	if lang == "en":
-		return msg
-
 	return get_full_dict(local.lang).get(msg) or msg
 
 def get_lang_dict(fortype, name=None):
@@ -85,7 +82,7 @@ message_log = local("message_log")
 
 lang = local("lang")
 
-def init(site, sites_path=None):
+def init(site, sites_path=None, new_site=False):
 	"""Initialize frappe for the current site. Reset thread locals `frappe.local`"""
 	if getattr(local, "initialised", None):
 		return
@@ -108,6 +105,7 @@ def init(site, sites_path=None):
 		"ignore_links": False,
 		"mute_emails": False,
 		"has_dataurl": False,
+		"new_site": new_site
 	})
 	local.rollback_observers = []
 	local.test_objects = {}
@@ -129,7 +127,7 @@ def init(site, sites_path=None):
 	local.system_settings = None
 
 	local.user = None
-	local.user_obj = None
+	local.user_perms = None
 	local.session = None
 	local.role_permissions = {}
 	local.valid_columns = {}
@@ -173,6 +171,8 @@ def get_site_config(sites_path=None, site_path=None):
 		site_config = os.path.join(site_path, "site_config.json")
 		if os.path.exists(site_config):
 			config.update(get_file_json(site_config))
+		elif local.site and not local.flags.new_site:
+			raise IncorrectSitePath, "{0} does not exist".format(site_config)
 
 	return _dict(config)
 
@@ -190,7 +190,9 @@ def cache():
 	global redis_server
 	if not redis_server:
 		from frappe.utils.redis_wrapper import RedisWrapper
-		redis_server = RedisWrapper.from_url(conf.get("cache_redis_server") or "redis://localhost:11311")
+		redis_server = RedisWrapper.from_url(conf.get('redis_cache')
+			or conf.get("cache_redis_server")
+			or "redis://localhost:11311")
 	return redis_server
 
 def get_traceback():
@@ -285,13 +287,13 @@ def set_user(username):
 	local.session.data = _dict()
 	local.role_permissions = {}
 	local.new_doc_templates = {}
-	local.user_obj = None
+	local.user_perms = None
 
 def get_user():
-	from frappe.utils.user import User
-	if not local.user_obj:
-		local.user_obj = User(local.session.user)
-	return local.user_obj
+	from frappe.utils.user import UserPermissions
+	if not local.user_perms:
+		local.user_perms = UserPermissions(local.session.user)
+	return local.user_perms
 
 def get_roles(username=None):
 	"""Returns roles of current user."""
@@ -315,7 +317,7 @@ def sendmail(recipients=(), sender="", subject="No Subject", message="No Message
 		as_markdown=False, bulk=False, reference_doctype=None, reference_name=None,
 		unsubscribe_method=None, unsubscribe_params=None, unsubscribe_message=None,
 		attachments=None, content=None, doctype=None, name=None, reply_to=None,
-		cc=(), show_as_cc=(), message_id=None, as_bulk=False, send_after=None, expose_recipients=False,
+		cc=(), show_as_cc=(), message_id=None, in_reply_to=None, as_bulk=False, send_after=None, expose_recipients=False,
 		bulk_priority=1):
 	"""Send email using user's default **Email Account** or global default **Email Account**.
 
@@ -334,6 +336,7 @@ def sendmail(recipients=(), sender="", subject="No Subject", message="No Message
 	:param attachments: List of attachments.
 	:param reply_to: Reply-To email id.
 	:param message_id: Used for threading. If a reply is received to this email, Message-Id is sent back as In-Reply-To in received email.
+	:param in_reply_to: Used to send the Message-Id of a received email back as In-Reply-To.
 	:param send_after: Send after the given datetime.
 	:param expose_recipients: Display all recipients in the footer message - "This email was sent to"
 	"""
@@ -344,18 +347,18 @@ def sendmail(recipients=(), sender="", subject="No Subject", message="No Message
 			subject=subject, message=content or message,
 			reference_doctype = doctype or reference_doctype, reference_name = name or reference_name,
 			unsubscribe_method=unsubscribe_method, unsubscribe_params=unsubscribe_params, unsubscribe_message=unsubscribe_message,
-			attachments=attachments, reply_to=reply_to, cc=cc, show_as_cc=show_as_cc, message_id=message_id, send_after=send_after,
-			expose_recipients=expose_recipients, bulk_priority=bulk_priority)
+			attachments=attachments, reply_to=reply_to, cc=cc, show_as_cc=show_as_cc, message_id=message_id, in_reply_to=in_reply_to,
+			send_after=send_after, expose_recipients=expose_recipients, bulk_priority=bulk_priority)
 	else:
 		import frappe.email
 		if as_markdown:
 			frappe.email.sendmail_md(recipients, sender=sender,
 				subject=subject, msg=content or message, attachments=attachments, reply_to=reply_to,
-				cc=cc, message_id=message_id)
+				cc=cc, message_id=message_id, in_reply_to=in_reply_to)
 		else:
 			frappe.email.sendmail(recipients, sender=sender,
 				subject=subject, msg=content or message, attachments=attachments, reply_to=reply_to,
-				cc=cc, message_id=message_id)
+				cc=cc, message_id=message_id, in_reply_to=in_reply_to)
 
 logger = None
 whitelisted = []
@@ -564,10 +567,10 @@ def delete_doc(doctype=None, name=None, force=0, ignore_doctypes=None, for_reloa
 	frappe.model.delete_doc.delete_doc(doctype, name, force, ignore_doctypes, for_reload,
 		ignore_permissions, flags)
 
-def delete_doc_if_exists(doctype, name):
+def delete_doc_if_exists(doctype, name, force=0):
 	"""Delete document if exists."""
 	if db.exists(doctype, name):
-		delete_doc(doctype, name)
+		delete_doc(doctype, name, force=force)
 
 def reload_doctype(doctype, force=False):
 	"""Reload DocType from model (`[module]/[doctype]/[name]/[name].json`) files."""
@@ -636,18 +639,22 @@ def get_module_list(app_name):
 	"""Get list of modules for given all via `app/modules.txt`."""
 	return get_file_items(os.path.join(os.path.dirname(get_module(app_name).__file__), "modules.txt"))
 
-def get_all_apps(with_frappe=False, with_internal_apps=True, sites_path=None):
+def get_all_apps(with_internal_apps=True, sites_path=None):
 	"""Get list of all apps via `sites/apps.txt`."""
 	if not sites_path:
 		sites_path = local.sites_path
 
 	apps = get_file_items(os.path.join(sites_path, "apps.txt"), raise_not_found=True)
+
 	if with_internal_apps:
-		apps.extend(get_file_items(os.path.join(local.site_path, "apps.txt")))
-	if with_frappe:
-		if "frappe" in apps:
-			apps.remove("frappe")
-		apps.insert(0, 'frappe')
+		for app in get_file_items(os.path.join(local.site_path, "apps.txt")):
+			if app not in apps:
+				apps.append(app)
+
+	if "frappe" in apps:
+		apps.remove("frappe")
+	apps.insert(0, 'frappe')
+
 	return apps
 
 def get_installed_apps(sort=False, frappe_last=False):
@@ -822,11 +829,17 @@ def import_doc(path, ignore_links=False, ignore_insert=False, insert=False):
 def copy_doc(doc, ignore_no_copy=True):
 	""" No_copy fields also get copied."""
 	import copy
+	from frappe.model import optional_fields, default_fields
 
 	def remove_no_copy_fields(d):
 		for df in d.meta.get("fields", {"no_copy": 1}):
 			if hasattr(d, df.fieldname):
 				d.set(df.fieldname, None)
+
+	fields_to_clear = ['name', 'owner', 'creation', 'modified', 'modified_by']
+
+	if not local.flags.in_test:
+		fields_to_clear.append("docstatus")
 
 	if not isinstance(doc, dict):
 		d = doc.as_dict()
@@ -834,22 +847,19 @@ def copy_doc(doc, ignore_no_copy=True):
 		d = doc
 
 	newdoc = get_doc(copy.deepcopy(d))
-
-	newdoc.name = None
 	newdoc.set("__islocal", 1)
-	newdoc.owner = None
-	newdoc.creation = None
-	newdoc.amended_from = None
-	newdoc.amendment_date = None
+	for fieldname in (fields_to_clear + ['amended_from', 'amendment_date']):
+		newdoc.set(fieldname, None)
+
 	if not ignore_no_copy:
 		remove_no_copy_fields(newdoc)
 
-	for d in newdoc.get_all_children():
-		d.name = None
-		d.parent = None
+	for i, d in enumerate(newdoc.get_all_children()):
 		d.set("__islocal", 1)
-		d.owner = None
-		d.creation = None
+
+		for fieldname in fields_to_clear:
+			d.set(fieldname, None)
+
 		if not ignore_no_copy:
 			remove_no_copy_fields(d)
 
@@ -1044,7 +1054,7 @@ def attach_print(doctype, name, file_name=None, print_format=None, style=None, h
 	return out
 
 logging_setup_complete = False
-def get_logger(module=None):
+def get_logger(module=None, loglevel="DEBUG"):
 	from frappe.setup_logging import setup_logging
 	global logging_setup_complete
 
@@ -1052,7 +1062,10 @@ def get_logger(module=None):
 		setup_logging()
 		logging_setup_complete = True
 
-	return logging.getLogger(module or "frappe")
+	logger = logging.getLogger(module or "frappe")
+	logger.setLevel(logging.DEBUG)
+
+	return logger
 
 def publish_realtime(*args, **kwargs):
 	"""Publish real-time updates

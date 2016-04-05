@@ -197,17 +197,6 @@ function precision(fieldname, doc) {
 	return frappe.meta.get_field_precision(df, doc);
 }
 
-var lstrip = function(s, chars) {
-	if(!chars) chars = ['\n', '\t', ' '];
-	// strip left
-	var first_char = s.substr(0,1);
-	while(in_list(chars, first_char)) {
-		var s = s.substr(1);
-		first_char = s.substr(0,1);
-	}
-	return s;
-}
-
 function in_list(list, item) {
 	if(!list) return false;
 	for(var i=0, j=list.length; i<j; i++)
@@ -218,6 +207,28 @@ function in_list(list, item) {
 function remainder(numerator, denominator, precision) {
 	precision = cint(precision);
 	var multiplier = Math.pow(10, precision);
-	var _remainder = ((numerator * multiplier) % (denominator * multiplier)) / multiplier;
+	if (precision) {
+		var _remainder = ((numerator * multiplier) % (denominator * multiplier)) / multiplier;
+	} else {
+		var _remainder = numerator % denominator;
+	}
+
 	return flt(_remainder, precision);
+};
+
+function round_based_on_smallest_currency_fraction(value, currency, precision) {
+	var smallest_currency_fraction_value = flt(frappe.model.get_value(":Currency",
+		currency, "smallest_currency_fraction_value"))
+
+	if(smallest_currency_fraction_value) {
+		var remainder_val = remainder(value, smallest_currency_fraction_value, precision);
+		if(remainder_val > (smallest_currency_fraction_value / 2)) {
+			value += (smallest_currency_fraction_value - remainder_val);
+		} else {
+			value -= remainder_val;
+		}
+	} else {
+		value = Math.round(value);
+	}
+	return value;
 };

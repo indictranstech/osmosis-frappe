@@ -44,6 +44,7 @@ frappe.views.QueryReport = Class.extend({
 		</div>\
 		<div class="results" style="display: none;">\
 			<div class="result-area" style="height:400px;"></div>\
+			<p class="help-msg alert alert-warning text-center" style="margin: 15px; margin-top: 0px;"></p>\
 			<p class="msg-box small">\
 				'+__('For comparative filters, start with')+' ">" or "<", e.g. >5 or >01-02-2012\
 				<br>'+__('For ranges')+' ('+__('values and dates')+') use ":", \
@@ -67,6 +68,8 @@ frappe.views.QueryReport = Class.extend({
 
 		this.page.add_menu_item(__("Print"), function() { me.print_report(); }, true);
 
+		this.page.add_menu_item(__("PDF"), function() { me.pdf_report(); }, true);
+
 		this.page.add_menu_item(__('Export'), function() { me.export_report(); },
 			true);
 
@@ -79,6 +82,11 @@ frappe.views.QueryReport = Class.extend({
 				frappe.set_route("user-permissions");
 			}, true);
 		}
+
+		// add to desktop
+		this.page.add_menu_item(__("Add to Desktop"), function() {
+			frappe.add_to_desktop(me.report_name, me.report_doc.ref_doctype);
+		}, true);
 	},
 	load: function() {
 		// load from route
@@ -108,9 +116,20 @@ frappe.views.QueryReport = Class.extend({
 									me.page.set_title(__(me.report_name));
 									frappe.dom.eval(r.message.script || "");
 									me.setup_filters();
+
+									var report_settings = frappe.query_reports[me.report_name];
 									me.html_format = r.message.html_format;
-									frappe.query_reports[me.report_name]["html_format"] = r.message.html_format;
-									me.refresh();
+									report_settings["html_format"] = r.message.html_format;
+
+									$.when(function() {
+										if (report_settings.onload) {
+											return report_settings.onload(me);
+										}
+
+									}()).then(function() {
+										me.refresh();
+									})
+
 								}
 							});
 						} else {
@@ -126,14 +145,65 @@ frappe.views.QueryReport = Class.extend({
 		}
 	},
 	print_report: function() {
+		if(!frappe.model.can_print(this.report_doc.ref_doctype)) {
+			msgprint(__("You are not allowed to print this report"));
+			return false;
+		}
+
 		if(this.html_format) {
 			var content = frappe.render(this.html_format,
 				{data: this.dataView.getItems(), filters:this.get_values(), report:this});
 
 			frappe.render_grid({content:content, title:__(this.report_name)});
 		} else {
-			frappe.render_grid({grid:this.grid, title:__(this.report_name)});
+			frappe.render_grid({grid:this.grid, report: this, title:__(this.report_name)});
 		}
+	},
+	pdf_report: function() {
+		if(!frappe.model.can_print(this.report_doc.ref_doctype)) {
+			msgprint(__("You are not allowed to make PDF for this report"));
+			return false;
+		}
+
+		if(this.html_format) {
+			var content = frappe.render(this.html_format,
+				{data: this.dataView.getItems(), filters:this.get_values(), report:this});
+
+			//Render Report in HTML
+			var html = frappe.render_template("print_template", {content:content, title:__(this.report_name)});
+		} else {
+			var columns = this.grid.getColumns();
+			var data = this.grid.getData().getItems();
+			var content = frappe.render_template("print_grid", {columns:columns, data:data, title:__(this.report_name)})
+
+			//Render Report in HTML
+			var html = frappe.render_template("print_template", {content:content, title:__(this.report_name)});
+		}
+
+		//Create a form to place the HTML content
+		var formData = new FormData();
+
+		//Push the HTML content into an element
+		formData.append("html", html);
+		var blob = new Blob([], { type: "text/xml"});
+		//formData.append("webmasterfile", blob);
+		formData.append("blob", blob);
+
+		var xhr = new XMLHttpRequest();
+		xhr.open("POST", '/api/method/frappe.templates.pages.print.report_to_pdf');
+		xhr.setRequestHeader("X-Frappe-CSRF-Token", frappe.csrf_token);
+		xhr.responseType = "arraybuffer";
+
+		xhr.onload = function(success) {
+		    if (this.status === 200) {
+		        var blob = new Blob([success.currentTarget.response], {type: "application/pdf"});
+		        var objectUrl = URL.createObjectURL(blob);
+
+		        //Open report in a new window
+		        window.open(objectUrl);
+		    }
+		};
+		xhr.send(formData);
 	},
 	setup_filters: function() {
 		this.clear_filters();
@@ -200,10 +270,13 @@ frappe.views.QueryReport = Class.extend({
 	refresh: function() {
 		// Run
 		var me = this;
-		this.waiting = frappe.messages.waiting(this.wrapper.find(".waiting-area").empty().toggle(true),
-			__("Loading Report") + "...");
+
 		this.wrapper.find(".results").toggle(false);
 		var filters = this.get_values(true);
+
+		this.waiting = frappe.messages.waiting(this.wrapper.find(".waiting-area").empty().toggle(true),
+			__("Loading Report") + "...");
+		this.wrapper.find(".no-report-area").toggle(false);
 
 		if (this.report_ajax) {
 			// abort previous request
@@ -220,6 +293,7 @@ frappe.views.QueryReport = Class.extend({
 			callback: function(r) {
 				me.report_ajax = undefined;
 				me.make_results(r.message.result, r.message.columns);
+				me.set_message(r.message.message);
 			}
 		});
 
@@ -320,7 +394,7 @@ frappe.views.QueryReport = Class.extend({
 
 				if (!df.fieldtype) df.fieldtype = "Data";
 				if (!cint(df.width)) df.width = 80;
-				
+
 				if (df.hidden) {
 					return null;
 				}
@@ -627,5 +701,12 @@ frappe.views.QueryReport = Class.extend({
 		this.title = this.report_name;
 		frappe.tools.downloadify(result, null, this.title);
 		return false;
+	},
+	set_message: function(msg) {
+		if(msg) {
+			this.wrapper.find(".help-msg").html(msg).toggle(true);
+		} else {
+			this.wrapper.find(".help-msg").empty().toggle(false);
+		}
 	}
 })

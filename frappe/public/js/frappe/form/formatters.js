@@ -55,9 +55,9 @@ frappe.form.formatters = {
 	},
 	Check: function(value) {
 		if(value) {
-			return '<i class="octicon octicon-check" style="margin-right: 8px;"></i>';
+			return '<i class="octicon octicon-check" style="margin-right: 3px;"></i>';
 		} else {
-			return '<i class="icon-check-empty text-extra-muted" style="margin-right: 8px;"></i>';
+			return '<i class="icon-ban-circle text-extra-muted" style="margin-right: 3px;"></i>';
 		}
 	},
 	Link: function(value, docfield, options) {
@@ -120,8 +120,7 @@ frappe.form.formatters = {
 	LikedBy: function(value) {
 		var html = "";
 		$.each(JSON.parse(value || "[]"), function(i, v) {
-			if(v) html+= '<span class="avatar avatar-small" \
-				style="margin-right: 3px;"><img src="'+frappe.user_info(v).image+'" alt="'+ frappe.user_info(v).abbr +'"></span>';
+			if(v) html+= frappe.avatar(v);
 		});
 		return html;
 	},

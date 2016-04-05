@@ -3,7 +3,7 @@
 
 from __future__ import unicode_literals
 import frappe
-from frappe.utils import cint, get_gravatar, format_datetime, now_datetime
+from frappe.utils import cint, has_gravatar, format_datetime, now_datetime
 from frappe import throw, msgprint, _
 from frappe.auth import _update_password
 from frappe.desk.notifications import clear_notifications
@@ -24,6 +24,11 @@ class User(Document):
 			self.email = self.email.strip()
 			self.name = self.email
 
+	def onload(self):
+		self.set_onload('all_modules',
+			[m.module_name for m in frappe.db.get_all('Desktop Icon',
+				fields=['module_name'], filters={'standard': 1})])
+
 	def validate(self):
 		self.in_insert = self.get("__islocal")
 
@@ -34,7 +39,8 @@ class User(Document):
 		if self.name not in STANDARD_USERS:
 			self.validate_email_type(self.email)
 		self.add_system_manager_role()
-		self.validate_system_manager_user_type()
+		self.set_system_user()
+		self.set_full_name()
 		self.check_enable_disable()
 		self.update_gravatar()
 		self.ensure_unique_roles()
@@ -43,6 +49,9 @@ class User(Document):
 
 		if self.language == "Loading...":
 			self.language = None
+
+	def set_full_name(self):
+		self.full_name = " ".join(filter(None, [self.first_name, self.last_name]))
 
 	def check_enable_disable(self):
 		# do not allow disabling administrator/guest
@@ -69,12 +78,6 @@ class User(Document):
 				"role": "System Manager"
 			})
 
-	def validate_system_manager_user_type(self):
-		#if user has system manager role then user type should be system user
-		if ("System Manager" in [user_role.role for user_role in
-			self.get("user_roles")]) and self.get("user_type") != "System User":
-				frappe.throw(_("User with System Manager Role should always have User Type: System User"))
-
 	def email_new_password(self, new_password=None):
 		if new_password and not self.in_insert:
 			_update_password(self.name, new_password)
@@ -82,6 +85,12 @@ class User(Document):
 			if self.send_password_update_notification:
 				self.password_update_mail(new_password)
 				frappe.msgprint(_("New password emailed"))
+
+	def set_system_user(self):
+		if self.user_roles or self.name == 'Administrator':
+			self.user_type = 'System User'
+		else:
+			self.user_type = 'Website User'
 
 	def on_update(self):
 		# clear new password
@@ -96,7 +105,7 @@ class User(Document):
 				flags={"ignore_share_permission": True})
 		else:
 			frappe.share.remove(self.doctype, self.name, self.name,
-				flags={"ignore_share_permission": True})
+				flags={"ignore_share_permission": True, "ignore_permissions": True})
 
 	def validate_share(self, docshare):
 		if docshare.user == self.name:
@@ -127,7 +136,7 @@ class User(Document):
 
 	def update_gravatar(self):
 		if not self.user_image:
-			self.user_image = get_gravatar(self.name)
+			self.user_image = has_gravatar(self.name)
 
 	@Document.hook
 	def validate_reset_password(self):
@@ -225,8 +234,10 @@ class User(Document):
 			and event_type='Private'""", (self.name,))
 
 		# delete messages
-		frappe.db.sql("""delete from `tabComment` where comment_doctype='Message'
-			and (comment_docname=%s or owner=%s)""", (self.name, self.name))
+		frappe.db.sql("""delete from `tabCommunication`
+			where communication_type in ('Chat', 'Notification')
+			and reference_doctype='User'
+			and (reference_name=%s or owner=%s)""", (self.name, self.name))
 
 	def before_rename(self, olddn, newdn, merge=False):
 		frappe.clear_cache(user=olddn)
@@ -310,8 +321,10 @@ class User(Document):
 		self.username = self.username.strip(" @")
 
 		if self.username_exists():
-			frappe.msgprint(_("Username {0} already exists").format(self.username))
-			self.suggest_username()
+			if self.user_type == 'System User':
+				frappe.msgprint(_("Username {0} already exists").format(self.username))
+				self.suggest_username()
+
 			self.username = ""
 
 		# should be made up of characters, numbers and underscore only
@@ -341,14 +354,14 @@ class User(Document):
 	def username_exists(self, username=None):
 		return frappe.db.get_value("User", {"username": username or self.username, "name": ("!=", self.name)})
 
+	def get_blocked_modules(self):
+		"""Returns list of modules blocked for that user"""
+		return [d.module for d in self.block_modules] if self.block_modules else []
+
 @frappe.whitelist()
-def get_languages():
-	from frappe.translate import get_lang_dict
+def get_timezones():
 	import pytz
-	languages = get_lang_dict().keys()
-	languages.sort()
 	return {
-		"languages": [""] + languages,
 		"timezones": pytz.all_timezones
 	}
 
@@ -383,14 +396,23 @@ def update_password(new_password, key=None, old_password=None):
 
 	_update_password(user, new_password)
 
-	frappe.db.set_value("User", user, "reset_password_key", "")
+	user_doc, redirect_url = reset_user_data(user)
 
 	frappe.local.login_manager.login_as(user)
 
-	if frappe.db.get_value("User", user, "user_type")=="System User":
+	if user_doc.user_type == "System User":
 		return "/desk"
 	else:
-		return "/"
+		return redirect_url if redirect_url else "/"
+
+def reset_user_data(user):
+	user_doc = frappe.get_doc("User", user)
+	redirect_url = user_doc.redirect_url
+	user_doc.reset_password_key = ''
+	user_doc.redirect_url = ''
+	user_doc.save(ignore_permissions=True)
+
+	return user_doc, redirect_url
 
 @frappe.whitelist()
 def verify_password(password):
@@ -445,7 +467,6 @@ def user_query(doctype, txt, searchfield, start, page_len, filters):
 		where enabled=1
 			and docstatus < 2
 			and name not in ({standard_users})
-			and user_type != 'Website User'
 			and ({key} like %s
 				or concat_ws(' ', first_name, middle_name, last_name) like %s)
 			{mcond}
@@ -507,9 +528,6 @@ def has_permission(doc, user):
 	if (user != "Administrator") and (doc.name in STANDARD_USERS):
 		# dont allow non Administrator user to view / edit Administrator user
 		return False
-
-	else:
-		return True
 
 def notifify_admin_access_to_system_manager(login_manager=None):
 	if (login_manager

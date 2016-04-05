@@ -109,6 +109,11 @@ frappe.views.ReportView = frappe.ui.Listing.extend({
 		this.make_save();
 		this.make_user_permissions();
 		this.set_tag_and_status_filter();
+
+		// add to desktop
+		this.page.add_menu_item(__("Add to Desktop"), function() {
+			frappe.add_to_desktop(__('{0} Report', [me.doctype]), me.doctype);
+		}, true);
 	},
 
 	make_new_and_refresh: function() {
@@ -120,6 +125,7 @@ frappe.views.ReportView = frappe.ui.Listing.extend({
 		this.page.add_menu_item(__("New {0}", [this.doctype]), function() {
 			me.make_new_doc(me.doctype);
 		}, true);
+
 	},
 
 	set_init_columns: function() {
@@ -251,6 +257,14 @@ frappe.views.ReportView = frappe.ui.Listing.extend({
 					}[docfield.fieldname] || docfield.fieldtype;
 
 					if(docfield.fieldtype==="Link" && docfield.fieldname!=="name") {
+
+						// make a copy of docfield for reportview
+						// as it needs to add a link_onclick property
+						if(!columnDef.report_docfield) {
+							columnDef.report_docfield = copy_dict(docfield);
+						}
+						docfield = columnDef.report_docfield;
+
 						docfield.link_onclick =
 							repl('frappe.container.page.reportview.set_filter("%(fieldname)s", "%(value)s").run()',
 								{fieldname:docfield.fieldname, value:value});

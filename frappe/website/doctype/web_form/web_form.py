@@ -7,7 +7,6 @@ from frappe.website.website_generator import WebsiteGenerator
 from frappe import _
 from frappe.utils.file_manager import save_file, remove_file_by_url
 from frappe.website.utils import get_comment_list
-from frappe.model import default_fields
 from frappe.custom.doctype.customize_form.customize_form import docfield_properties
 
 class WebForm(WebsiteGenerator):
@@ -22,10 +21,12 @@ class WebForm(WebsiteGenerator):
 		if self.is_standard and not frappe.conf.developer_mode:
 			self.use_meta_fields()
 
+
 	def validate(self):
-		if (not (frappe.flags.in_install or frappe.flags.in_patch or frappe.flags.in_test)
+		if (not (frappe.flags.in_install or frappe.flags.in_patch or frappe.flags.in_test or frappe.flags.in_fixtures)
 			and self.is_standard and not frappe.conf.developer_mode):
 			frappe.throw(_("You need to be in developer mode to edit a Standard Web Form"))
+
 
 	def use_meta_fields(self):
 		meta = frappe.get_meta(self.doc_type)
@@ -37,7 +38,9 @@ class WebForm(WebsiteGenerator):
 				continue
 
 			for prop in docfield_properties:
-				if df.fieldtype==meta_df.fieldtype and prop != "idx":
+				if df.fieldtype==meta_df.fieldtype and prop not in ("idx",
+					"reqd", "default", "description", "default", "options",
+					"hidden", "read_only", "label"):
 					df.set(prop, meta_df.get(prop))
 
 			if df.fieldtype == "Link":
@@ -101,9 +104,10 @@ class WebForm(WebsiteGenerator):
 		if frappe.form_dict.name:
 			context.doc = frappe.get_doc(self.doc_type, frappe.form_dict.name)
 			context.title = context.doc.get(context.doc.meta.get_title_field())
+			context.doc.add_seen()
 
-			context.comment_doctype = context.doc.doctype
-			context.comment_docname = context.doc.name
+			context.reference_doctype = context.doc.doctype
+			context.reference_name = context.doc.name
 
 		if self.allow_comments and frappe.form_dict.name:
 			context.comment_list = get_comment_list(context.doc.doctype, context.doc.name)
@@ -114,6 +118,23 @@ class WebForm(WebsiteGenerator):
 		if context.success_message:
 			context.success_message = context.success_message.replace("\n",
 				"<br>").replace("'", "\'")
+
+		self.set_back_to_link(context)
+
+
+	def set_back_to_link(self, context):
+		'''Sets breadcrumbs, success and fail URL if
+		`back-to` argument is set'''
+		if frappe.form_dict.get('back-to'):
+			link = frappe.form_dict.get('back-to')
+			title = frappe.form_dict.get('back-to-title') or _('Back')
+
+			# breadcrumbs
+			context.parents = [{'name': link, 'title': title }]
+
+			# success
+			context.success_url = link
+			context.cancel_url = link
 
 		return context
 
@@ -133,12 +154,13 @@ class WebForm(WebsiteGenerator):
 
 	def get_parents(self, context):
 		parents = None
-		if context.parents:
-			parents = context.parents
+
+		if context.is_list:
+			parents = [{"title": _("My Account"), "name": "me"}]
 		elif self.breadcrumbs:
 			parents = json.loads(self.breadcrumbs)
-		elif context.is_list:
-			parents = [{"title": _("My Account"), "name": "me"}]
+		elif context.parents:
+			parents = context.parents
 
 		return parents
 

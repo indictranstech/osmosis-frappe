@@ -54,15 +54,25 @@ def get_print_format_doc(print_format_name, meta):
 def get_html(doc, name=None, print_format=None, meta=None,
 	no_letterhead=None, trigger_print=False):
 
+	print_settings = frappe.db.get_singles_dict("Print Settings")
+
 	if isinstance(no_letterhead, basestring):
 		no_letterhead = cint(no_letterhead)
+
 	elif no_letterhead is None:
-		no_letterhead = not cint(frappe.db.get_single_value("Print Settings", "with_letterhead"))
+		no_letterhead = not cint(print_settings.with_letthead)
 
 	doc.flags.in_print = True
 
 	if not frappe.flags.ignore_print_permissions:
 		validate_print_permission(doc)
+
+	if doc.meta.is_submittable:
+		if doc.docstatus==0 and not print_settings.allow_print_for_draft:
+			frappe.throw(_("Not allowed to print draft documents"), frappe.PermissionError)
+
+		if doc.docstatus==2 and not print_settings.allow_print_for_cancelled:
+			frappe.throw(_("Not allowed to print cancelled documents"), frappe.PermissionError)
 
 	if hasattr(doc, "before_print"):
 		doc.before_print()
@@ -106,13 +116,16 @@ def get_html(doc, name=None, print_format=None, meta=None,
 	if template == "standard":
 		template = jenv.get_template(standard_format)
 
+	letter_head = frappe._dict(get_letter_head(doc, no_letterhead) or {})
 	args = {
 		"doc": doc,
 		"meta": frappe.get_meta(doc.doctype),
 		"layout": make_layout(doc, meta, format_data),
 		"no_letterhead": no_letterhead,
 		"trigger_print": cint(trigger_print),
-		"letter_head": get_letter_head(doc, no_letterhead)
+		"letter_head": letter_head.content,
+		"footer": letter_head.footer,
+		"print_settings": frappe.get_doc("Print Settings")
 	}
 
 	html = template.render(args, filters={"len": len})
@@ -141,10 +154,48 @@ def get_html_and_style(doc, name=None, print_format=None, meta=None,
 	}
 
 @frappe.whitelist()
+def download_multi_pdf(doctype, name, format=None):
+	# name can include names of many docs of the same doctype.
+	totalhtml = ""
+	# Pagebreak to be added between each doc html
+	pagebreak = """<p style="page-break-after:always;"></p>"""
+
+	options = {}
+
+	import json
+	result = json.loads(name)
+	# Get html of each doc and combine including page breaks
+	for i, ss in enumerate(result):
+		html = frappe.get_print(doctype, ss, format)
+		if i == len(result)-1:
+			totalhtml = totalhtml + html
+		else:
+			totalhtml = totalhtml + html + pagebreak
+
+
+
+	frappe.local.response.filename = "{doctype}.pdf".format(doctype=doctype.replace(" ", "-").replace("/", "-"))
+
+
+	# Title of pdf
+	options.update({
+		'title': doctype,
+	})
+
+	frappe.local.response.filecontent = get_pdf(totalhtml,options)
+	frappe.local.response.type = "download"
+
+@frappe.whitelist()
 def download_pdf(doctype, name, format=None):
 	html = frappe.get_print(doctype, name, format)
 	frappe.local.response.filename = "{name}.pdf".format(name=name.replace(" ", "-").replace("/", "-"))
 	frappe.local.response.filecontent = get_pdf(html)
+	frappe.local.response.type = "download"
+
+@frappe.whitelist()
+def report_to_pdf(html):
+	frappe.local.response.filename = "report.pdf"
+	frappe.local.response.filecontent = get_pdf(html, {"orientation": "Landscape"})
 	frappe.local.response.type = "download"
 
 def validate_print_permission(doc):
@@ -159,11 +210,11 @@ def validate_print_permission(doc):
 
 def get_letter_head(doc, no_letterhead):
 	if no_letterhead:
-		return ""
+		return {}
 	if doc.get("letter_head"):
-		return frappe.db.get_value("Letter Head", doc.letter_head, "content")
+		return frappe.db.get_value("Letter Head", doc.letter_head, ["content", "footer"], as_dict=True)
 	else:
-		return frappe.db.get_value("Letter Head", {"is_default": 1}, "content") or ""
+		return frappe.db.get_value("Letter Head", {"is_default": 1}, ["content", "footer"], as_dict=True) or {}
 
 def get_print_format(doctype, print_format):
 	if print_format.disabled:
@@ -261,6 +312,9 @@ def is_visible(df, doc):
 	if hasattr(doc, "hide_in_print_layout"):
 		if df.fieldname in doc.hide_in_print_layout:
 			return False
+
+	if df.permlevel > 0 and not doc.has_permlevel_access_to(df.fieldname, df):
+		return False
 
 	return not doc.is_print_hide(df.fieldname, df)
 

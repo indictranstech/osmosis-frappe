@@ -4,9 +4,11 @@
 from __future__ import unicode_literals
 import frappe, sys
 from frappe import _
-from frappe.utils import cint, flt, now, cstr, strip_html, getdate, get_datetime, to_timedelta
+from frappe.utils import (cint, flt, now, cstr, strip_html, getdate, get_datetime, to_timedelta,
+	sanitize_html, sanitize_email)
 from frappe.model import default_fields
 from frappe.model.naming import set_new_name
+from frappe.model.utils.link_count import notify_link_count
 from frappe.modules import load_doctype_module
 from frappe.model import display_fieldtypes
 from frappe.model.db_schema import type_map, varchar_len
@@ -173,14 +175,21 @@ class BaseDocument(object):
 
 		return value
 
-	def get_valid_dict(self):
-		d = {}
+	def get_valid_dict(self, sanitize=True):
+		d = frappe._dict()
 		for fieldname in self.meta.get_valid_columns():
 			d[fieldname] = self.get(fieldname)
 
+			# if no need for sanitization and value is None, continue
+			if not sanitize and d[fieldname] is None:
+				continue
+
 			df = self.meta.get_field(fieldname)
 			if df:
-				if df.fieldtype in ("Check", "Int") and not isinstance(d[fieldname], int):
+				if df.fieldtype=="Check" and (not isinstance(d[fieldname], int) or d[fieldname] > 1):
+					d[fieldname] = 1 if cint(d[fieldname]) else 0
+
+				elif df.fieldtype=="Int" and not isinstance(d[fieldname], int):
 					d[fieldname] = cint(d[fieldname])
 
 				elif df.fieldtype in ("Currency", "Float", "Percent") and not isinstance(d[fieldname], float):
@@ -192,6 +201,9 @@ class BaseDocument(object):
 				elif df.get("unique") and cstr(d[fieldname]).strip()=="":
 					# unique empty field should be set to None
 					d[fieldname] = None
+
+				if isinstance(d[fieldname], list) and df.fieldtype != 'Table':
+					frappe.throw(_('Value for {0} cannot be a list').format(_(df.label)))
 
 		return d
 
@@ -243,7 +255,7 @@ class BaseDocument(object):
 			if self.get(key):
 				doc[key] = self.get(key)
 
-		return frappe._dict(doc)
+		return doc
 
 	def as_json(self):
 		return frappe.as_json(self.as_dict())
@@ -389,11 +401,10 @@ class BaseDocument(object):
 
 		invalid_links = []
 		cancelled_links = []
-		for df in self.meta.get_link_fields() + self.meta.get("fields",
-			{"fieldtype":"Dynamic Link"}):
-
-
+		for df in (self.meta.get_link_fields()
+				 + self.meta.get("fields", {"fieldtype":"Dynamic Link"})):
 			docname = self.get(df.fieldname)
+
 			if docname:
 				if df.fieldtype=="Link":
 					doctype = df.options
@@ -406,7 +417,12 @@ class BaseDocument(object):
 
 				# MySQL is case insensitive. Preserve case of the original docname in the Link Field.
 				value = frappe.db.get_value(doctype, docname, "name", cache=True)
+				if frappe.get_meta(doctype).issingle:
+					value = doctype
+
 				setattr(self, df.fieldname, value)
+
+				notify_link_count(doctype, docname)
 
 				if not value:
 					invalid_links.append((df.fieldname, docname, get_msg(df, docname)))
@@ -500,6 +516,47 @@ class BaseDocument(object):
 					frappe.throw(_("Not allowed to change {0} after submission").format(df.label),
 						frappe.UpdateAfterSubmitError)
 
+	def _sanitize_content(self):
+		"""Sanitize HTML and Email in field values. Used to prevent XSS.
+
+			- Ignore if 'Ignore XSS Filter' is checked or fieldtype is 'Code'
+		"""
+		if frappe.flags.in_install:
+			return
+
+		for fieldname, value in self.get_valid_dict().items():
+			if not value or not isinstance(value, basestring):
+				continue
+
+			elif ("<" not in value and ">" not in value):
+				# doesn't look like html so no need
+				continue
+
+			elif "<!-- markdown -->" in value and not ("<script" in value or "javascript:" in value):
+				# should be handled separately via the markdown converter function
+				continue
+
+			df = self.meta.get_field(fieldname)
+			sanitized_value = value
+
+			if df and df.get("fieldtype") in ("Data", "Code", "Small Text") and df.get("options")=="Email":
+				sanitized_value = sanitize_email(value)
+
+			elif df and (df.get("ignore_xss_filter")
+						or (df.get("fieldtype")=="Code" and df.get("options")!="Email")
+						or df.get("fieldtype") in ("Attach", "Attach Image")
+
+						# cancelled and submit but not update after submit should be ignored
+						or self.docstatus==2
+						or (self.docstatus==1 and not df.get("allow_on_submit"))):
+				continue
+
+
+			else:
+				sanitized_value = sanitize_html(value)
+
+			self.set(fieldname, sanitized_value)
+
 	def precision(self, fieldname, parentfield=None):
 		"""Returns float precision for a particular field (or get global default).
 
@@ -530,7 +587,7 @@ class BaseDocument(object):
 		return self._precision[cache_key][fieldname]
 
 
-	def get_formatted(self, fieldname, doc=None, currency=None, absolute_value=False):
+	def get_formatted(self, fieldname, doc=None, currency=None, absolute_value=False, translated=False):
 		from frappe.utils.formatters import format_value
 
 		df = self.meta.get_field(fieldname)
@@ -539,6 +596,10 @@ class BaseDocument(object):
 			df = get_default_df(fieldname)
 
 		val = self.get(fieldname)
+
+		if translated:
+			val = _(val)
+
 		if absolute_value and isinstance(val, (int, float)):
 			val = abs(self.get(fieldname))
 

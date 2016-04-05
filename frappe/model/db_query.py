@@ -18,7 +18,7 @@ class DatabaseQuery(object):
 		self.tables = []
 		self.conditions = []
 		self.or_conditions = []
-		self.fields = ["`tab{0}`.`name`".format(doctype)]
+		self.fields = None
 		self.user = None
 		self.flags = frappe._dict()
 
@@ -29,8 +29,24 @@ class DatabaseQuery(object):
 		if not ignore_permissions and not frappe.has_permission(self.doctype, "read", user=user):
 			raise frappe.PermissionError, self.doctype
 
+		# fitlers and fields swappable
+		# its hard to remember what comes first
+		if isinstance(fields, dict):
+			# if fields is given as dict, its probably filters
+			self.filters = fields
+			fields = None
+
+		if self.fields and isinstance(filters, list) \
+			and len(filters) > 1 and isinstance(filters[0], basestring):
+			# if `filters` is a list of strings, its probably fields
+			self.fields = filters
+			filters = None
+
 		if fields:
 			self.fields = fields
+		else:
+			self.fields =  ["`tab{0}`.`name`".format(self.doctype)]
+
 		self.filters = filters or []
 		self.or_filters = or_filters or []
 		self.docstatus = docstatus or []
@@ -69,7 +85,7 @@ class DatabaseQuery(object):
 	def prepare_args(self):
 		self.parse_args()
 		self.extract_tables()
-		self.remove_user_tags()
+		self.set_optional_columns()
 		self.build_conditions()
 
 		args = frappe._dict()
@@ -160,7 +176,7 @@ class DatabaseQuery(object):
 		if (not self.flags.ignore_permissions) and (not frappe.has_permission(doctype)):
 			raise frappe.PermissionError, doctype
 
-	def remove_user_tags(self):
+	def set_optional_columns(self):
 		"""Removes optional columns like `_user_tags`, `_comments` etc. if not in table"""
 		columns = frappe.db.get_table_columns(self.doctype)
 
@@ -189,6 +205,10 @@ class DatabaseQuery(object):
 				del self.filters[each]
 			else:
 				self.filters.remove(each)
+
+		# add _seen if track_seen is set
+		if getattr(frappe.get_meta(self.doctype), 'track_seen', False):
+			self.fields.append('_seen')
 
 	def build_conditions(self):
 		self.conditions = []
@@ -429,8 +449,12 @@ class DatabaseQuery(object):
 				) and not self.group_by)
 
 			if not group_function_without_group_by:
-				args.order_by = "`tab{0}`.`{1}` {2}".format(self.doctype,
-					meta.get("sort_field") or "modified", meta.get("sort_order") or "desc")
+				sort_field = sort_order = None
+				if meta.sort_field:
+					sort_field = meta.sort_field
+					sort_order = meta.sort_order
+
+				args.order_by = "`tab{0}`.`{1}` {2}".format(self.doctype, sort_field or "modified", sort_order or "desc")
 
 				# draft docs always on top
 				if meta.is_submittable:
@@ -458,12 +482,21 @@ class DatabaseQuery(object):
 			if "_comments" in r:
 				comment_count = len(json.loads(r._comments or "[]"))
 			else:
-				comment_count = cint(frappe.db.get_value("Comment",
-					filters={"comment_doctype": self.doctype, "comment_docname": r.name, "comment_type": "Comment"},
+				comment_count = cint(frappe.db.get_value("Communication",
+					filters={
+						"communication_type": "Comment",
+						"reference_doctype": self.doctype,
+						"reference_name": r.name,
+						"comment_type": "Comment"
+					},
 					fieldname="count(name)"))
 
 			communication_count = cint(frappe.db.get_value("Communication",
-				filters={"reference_doctype": self.doctype, "reference_name": r.name},
+				filters={
+					"communication_type": "Communication",
+					"reference_doctype": self.doctype,
+					"reference_name": r.name
+				},
 				fieldname="count(name)"))
 
 			r._comment_count = comment_count + communication_count

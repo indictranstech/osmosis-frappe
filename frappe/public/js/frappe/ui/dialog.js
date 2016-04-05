@@ -37,6 +37,9 @@ frappe.ui.Dialog = frappe.ui.FieldGroup.extend({
 		var me = this;
 		this.$wrapper
 			.on("hide.bs.modal", function() {
+				if(me.body_hidden) {
+					$("#body_div").toggle(true);
+				}
 				me.display = false;
 				if(frappe.ui.open_dialogs[frappe.ui.open_dialogs.length-1]===me) {
 					frappe.ui.open_dialogs.pop();
@@ -49,6 +52,10 @@ frappe.ui.Dialog = frappe.ui.FieldGroup.extend({
 			})
 			.on("shown.bs.modal", function() {
 				// focus on first input
+				if(frappe.utils.is_mobile()) {
+					$("#body_div").toggle(false);
+					me.body_hidden = true;
+				}
 				me.display = true;
 				cur_dialog = me;
 				frappe.ui.open_dialogs.push(me);
@@ -107,9 +114,3 @@ frappe.ui.Dialog = frappe.ui.FieldGroup.extend({
 	}
 });
 
-// close open dialogs on ESC
-$(document).bind('keydown', function(e) {
-	if(cur_dialog && !cur_dialog.no_cancel_flag && e.which==27) {
-		cur_dialog.cancel();
-	}
-});

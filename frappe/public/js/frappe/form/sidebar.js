@@ -2,7 +2,6 @@ frappe.provide("frappe.ui.form");
 frappe.ui.form.Sidebar = Class.extend({
 	init: function(opts) {
 		$.extend(this, opts);
-		this.make();
 	},
 
 	make: function() {
@@ -16,6 +15,8 @@ frappe.ui.form.Sidebar = Class.extend({
 		this.sidebar = this.page_sidebar.add(this.offcanvas_form_sidebar);
 		this.comments = this.sidebar.find(".sidebar-comments");
 		this.user_actions = this.sidebar.find(".user-actions");
+		this.image_section = this.sidebar.find(".sidebar-image-section");
+		this.image_wrapper = this.image_section.find('.sidebar-image-wrapper');
 
 		this.make_assignments();
 		this.make_attachments();
@@ -64,12 +65,13 @@ frappe.ui.form.Sidebar = Class.extend({
 				"<br>" + comment_when(this.frm.doc.creation)]));
 
 			this.refresh_like();
+			frappe.ui.form.set_user_image(this.frm);
 		}
 	},
 
 	refresh_comments: function() {
-		var comments = $.map(this.frm.comments.get_comments(), function(c) {
-			return (c.comment_type==="Email" || c.comment_type==="Comment") ? c : null;
+		var comments = $.map(this.frm.timeline.get_communications(), function(c) {
+			return (c.communication_type==="Communication" || (c.communication_type=="Comment" && c.comment_type==="Comment")) ? c : null;
 		});
 		this.comments.find(".n-comments").html(comments.length);
 	},
@@ -144,4 +146,7 @@ frappe.ui.form.Sidebar = Class.extend({
 
 		this.like_count.text(JSON.parse(this.frm.doc._liked_by || "[]").length);
 	},
+
+	refresh_image: function() {
+	}
 });

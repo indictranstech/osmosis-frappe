@@ -50,7 +50,7 @@ frappe.ui.notifications.update_notifications = function() {
 
 	// switch colour on the navbar
 	$(".navbar-new-comments")
-		.html(frappe.ui.notifications.total)
+		.html(frappe.ui.notifications.total > 99 ? '99+' : frappe.ui.notifications.total)
 		.toggleClass("navbar-new-comments-true", frappe.ui.notifications.total ? true : false);
 
 }
@@ -69,8 +69,7 @@ frappe.ui.notifications.add_notification = function(doctype, notifications_map) 
 				%(count)s</span> \
 			%(label)s </a></li>', {
 				label: __(label),
-				icon: frappe.boot.doctype_icons[doctype],
-				count: count,
+				count: count > 99 ? '99+' : count,
 				data_doctype: doctype
 			});
 
@@ -84,7 +83,7 @@ frappe.ui.notifications.add_notification = function(doctype, notifications_map) 
 // default notification config
 frappe.ui.notifications.config = {
 	"ToDo": { label: __("To Do") },
-	"Comment": { label: __("Messages"), route: "messages"},
+	"Chat": { label: __("Chat"), route: "chat"},
 	"Event": { label: __("Calendar"), route: "Calendar/Event" },
 	"Likes": {
 		label: __("Likes"),
@@ -94,12 +93,12 @@ frappe.ui.notifications.config = {
 			};
 
 			if (frappe.get_route()[0]=="activity") {
-				frappe.pages['activity'].on_page_show();
+				frappe.pages['activity'].page.list.refresh();
 			} else {
 				frappe.set_route("activity");
 			}
 		}
-	}
+	},
 };
 
 frappe.views.show_open_count_list = function(element) {

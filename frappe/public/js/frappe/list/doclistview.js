@@ -27,9 +27,19 @@ frappe.views.ListFactory = frappe.views.Factory.extend({
 		});
 	},
 	show: function() {
+		this.set_module_breadcrumb();
 		this._super();
 		this.set_cur_list();
 		cur_list && cur_list.refresh();
+	},
+	set_module_breadcrumb: function() {
+		if(frappe.route_history.length > 1) {
+			var prev_route = frappe.route_history[frappe.route_history.length-2];
+			if(prev_route[0]==="modules") {
+				// save the last page from the breadcrumb was accessed
+				frappe.breadcrumbs.set_doctype_module(frappe.get_route()[1], prev_route[1]);
+			}
+		}
 	},
 	set_cur_list: function() {
 		var route = frappe.get_route();
@@ -359,7 +369,7 @@ frappe.views.DocListView = frappe.ui.Listing.extend({
 		}
 
 		// apply default filters, if specified for a listing
-		$.each((this.listview.default_filters || []), function(i, f) {
+		$.each((this.listview.default_filters || this.listview.settings.default_filters || []), function(i, f) {
 		      args.filters.push(f);
 		});
 
@@ -423,6 +433,19 @@ frappe.views.DocListView = frappe.ui.Listing.extend({
 			}, true);
 		}
 
+		this.make_bulk_assignment();
+		this.make_bulk_printing();
+
+		// add to desktop
+		this.page.add_menu_item(__("Add to Desktop"), function() {
+			frappe.add_to_desktop(me.doctype, me.doctype);
+		}, true);
+
+	},
+	make_bulk_assignment: function() {
+
+		var me = this;
+
 		//bulk assignment
 		me.page.add_menu_item(__("Assign To"), function(){
 
@@ -452,6 +475,70 @@ frappe.views.DocListView = frappe.ui.Listing.extend({
 				frappe.msgprint(__("Select records for assignment"))
 			}
 		}, true)
+
+	},
+	make_bulk_printing: function() {
+		var me = this;
+		var print_settings = frappe.model.get_doc(":Print Settings", "Print Settings")
+		var allow_print_for_draft = cint(print_settings.allow_print_for_draft)
+		var is_submittable = frappe.model.is_submittable(me.doctype)
+		var allow_print_for_cancelled = cint(print_settings.allow_print_for_cancelled)
+
+		//bulk priting
+		me.page.add_menu_item(__("Print"), function(){
+			var no_print = false
+			docname = [];
+			$.each(me.get_checked_items(), function(i, doc){
+				if(!is_submittable || doc.docstatus == 1  || 
+					(allow_print_for_cancelled && doc.docstatus == 2)|| 
+	 				(allow_print_for_draft && doc.docstatus == 0)|| 
+					in_list(user_roles, "Administrator"))
+				
+						docname.push(doc.name);
+				else
+					no_print = true
+			})
+			if(no_print == true){
+				frappe.msgprint("You selected Draft or Cancelled documents")
+			}
+			if(docname.length >= 1){
+
+				var dialog = new frappe.ui.Dialog({
+					title: "Print Documents",
+					fields: [
+						{"fieldtype": "Check", "label": __("With Letterhead"), "fieldname": "with_letterhead"},
+						{"fieldtype": "Select", "label": __("Print Format"), "fieldname": "print_sel"},
+					]
+				});
+
+				dialog.set_primary_action(__('Print'), function() {
+					args = dialog.get_values();
+					if(!args) return;
+					var default_print_format = locals.DocType[me.doctype].default_print_format;
+					with_letterhead = args.with_letterhead ? 1 : 0;
+					print_format = args.print_sel ? args.print_sel:default_print_format;
+
+					var json_string = JSON.stringify(docname);
+					var w = window.open("/api/method/frappe.templates.pages.print.download_multi_pdf?"
+						+"doctype="+encodeURIComponent(me.doctype)
+						+"&name="+encodeURIComponent(json_string)
+						+"&format="+encodeURIComponent(print_format)
+						+"&no_letterhead="+(with_letterhead ? "0" : "1"));
+					if(!w) {
+						msgprint(__("Please enable pop-ups")); return;
+					}
+
+				})
+
+				print_formats = frappe.meta.get_print_formats(me.doctype);
+				dialog.fields_dict.print_sel.$input.empty().add_options(print_formats);
+
+				dialog.show();
+			}
+			else{
+				frappe.msgprint(__("Select records for assignment"))
+			}
+		}, true);
 	},
 
 	init_like: function() {

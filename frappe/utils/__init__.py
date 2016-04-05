@@ -5,9 +5,17 @@
 
 from __future__ import unicode_literals
 from werkzeug.test import Client
-import os, sys, re, urllib
+import os, re, urllib, sys
+import json
 import frappe
+import md5
 import requests
+from frappe.utils.identicon import Identicon
+
+import bleach
+import bleach_whitelist
+from html5lib.sanitizer import HTMLSanitizer
+from markdown2 import markdown as _markdown
 
 # utility functions like cint, int, flt, etc.
 from frappe.utils.data import *
@@ -67,11 +75,14 @@ def extract_email_id(email):
 
 def validate_email_add(email_str, throw=False):
 	"""Validates the email string"""
-	if email_str and " " in email_str and "<" not in email_str:
+	if not email_str:
+		return False
+
+	elif " " in email_str and "<" not in email_str:
 		# example: "test@example.com test2@example.com" will return "test@example.comtest2" after parseaddr!!!
 		return False
 
-	email = extract_email_id(email_str)
+	email = extract_email_id(email_str.strip())
 	match = re.match("[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", email.lower())
 
 	if not match:
@@ -94,7 +105,9 @@ def validate_email_add(email_str, throw=False):
 
 def split_emails(txt):
 	email_list = []
-	for email in re.split(''',(?=(?:[^"]|"[^"]*")*$)''', cstr(txt)):
+
+	# emails can be separated by comma or newline
+	for email in re.split('''[,\\n](?=(?:[^"]|"[^"]*")*$)''', cstr(txt)):
 		email = strip(cstr(email))
 		if email:
 			email_list.append(email)
@@ -107,9 +120,23 @@ def random_string(length):
 	from random import choice
 	return ''.join([choice(string.letters + string.digits) for i in range(length)])
 
+def has_gravatar(email):
+	'''Returns gravatar url if user has set an avatar at gravatar.com'''
+	if frappe.flags.in_upload:
+		# no gravatar if via upload
+		# since querying gravatar for every item will be slow
+		return
+
+	gravatar_url = "https://secure.gravatar.com/avatar/{hash}?d=404&s=200".format(hash=md5.md5(email).hexdigest())
+	if requests.get(gravatar_url).status_code==404:
+		return ''
+	else:
+		return gravatar_url
+
 def get_gravatar(email):
-	import md5
-	return "https://secure.gravatar.com/avatar/{hash}?d=retro".format(hash=md5.md5(email).hexdigest())
+	gravatar_url = has_gravatar(email)
+	if not gravatar_url:
+		return Identicon(email).base64()
 
 def get_traceback():
 	"""
@@ -173,70 +200,6 @@ def remove_blanks(d):
 def strip_html_tags(text):
 	"""Remove html tags from text"""
 	return re.sub("\<[^>]*\>", "", text)
-
-def pprint_dict(d, level=1, no_blanks=True):
-	"""
-		Pretty print a dictionary with indents
-	"""
-	if no_blanks:
-		remove_blanks(d)
-
-	# make indent
-	indent, ret = '', ''
-	for i in range(0,level): indent += '\t'
-
-	# add lines
-	comment, lines = '', []
-	kl = d.keys()
-	kl.sort()
-
-	# make lines
-	for key in kl:
-		if key != '##comment':
-			tmp = {key: d[key]}
-			lines.append(indent + str(tmp)[1:-1] )
-
-	# add comment string
-	if '##comment' in kl:
-		ret = ('\n' + indent) + '# ' + d['##comment'] + '\n'
-
-	# open
-	ret += indent + '{\n'
-
-	# lines
-	ret += indent + ',\n\t'.join(lines)
-
-	# close
-	ret += '\n' + indent + '}'
-
-	return ret
-
-def get_common(d1,d2):
-	"""
-		returns (list of keys) the common part of two dicts
-	"""
-	return [p for p in d1 if p in d2 and d1[p]==d2[p]]
-
-def get_common_dict(d1, d2):
-	"""
-		return common dictionary of d1 and d2
-	"""
-	ret = {}
-	for key in d1:
-		if key in d2 and d2[key]==d1[key]:
-			ret[key] = d1[key]
-	return ret
-
-def get_diff_dict(d1, d2):
-	"""
-		return common dictionary of d1 and d2
-	"""
-	diff_keys = set(d2.keys()).difference(set(d1.keys()))
-
-	ret = {}
-	for d in diff_keys: ret[d] = d2[d]
-	return ret
-
 
 def get_file_timestamp(fn):
 	"""
@@ -376,12 +339,13 @@ def call_hook_method(hook, *args, **kwargs):
 	return out
 
 def update_progress_bar(txt, i, l):
-	lt = len(txt)
-	if lt < 36:
-		txt = txt + " "*(36-lt)
-	complete = int(float(i+1) / l * 40)
-	sys.stdout.write("\r{0}: [{1}{2}]".format(txt, "="*complete, " "*(40-complete)))
-	sys.stdout.flush()
+	if not getattr(frappe.local, 'request', None):
+		lt = len(txt)
+		if lt < 36:
+			txt = txt + " "*(36-lt)
+		complete = int(float(i+1) / l * 40)
+		sys.stdout.write("\r{0}: [{1}{2}]".format(txt, "="*complete, " "*(40-complete)))
+		sys.stdout.flush()
 
 def get_html_format(print_path):
 	html_format = None
@@ -424,11 +388,9 @@ def get_request_session(max_retries=3):
 	return session
 
 def watch(path, handler=None, debug=True):
-	import sys
 	import time
-	import logging
 	from watchdog.observers import Observer
-	from watchdog.events import LoggingEventHandler, FileSystemEventHandler
+	from watchdog.events import FileSystemEventHandler
 
 	class Handler(FileSystemEventHandler):
 		def on_any_event(self, event):
@@ -451,3 +413,60 @@ def watch(path, handler=None, debug=True):
 	except KeyboardInterrupt:
 		observer.stop()
 	observer.join()
+
+def sanitize_html(html):
+	"""
+	Sanitize HTML tags, attributes and style to prevent XSS attacks
+	Based on bleach clean, bleach whitelist and HTML5lib's Sanitizer defaults
+
+	Does not sanitize JSON, as it could lead to future problems
+	"""
+	if not isinstance(html, basestring):
+		return html
+
+	elif is_json(html):
+		return html
+
+	whitelisted_tags = (HTMLSanitizer.acceptable_elements + HTMLSanitizer.svg_elements
+		+ ["html", "head", "meta", "link", "body", "iframe", "style", "o:p"])
+
+	# retuns html with escaped tags, escaped orphan >, <, etc.
+	escaped_html = bleach.clean(html,
+		tags=whitelisted_tags,
+		attributes={"*": HTMLSanitizer.acceptable_attributes, "svg": HTMLSanitizer.svg_attributes},
+		styles=bleach_whitelist.all_styles,
+		strip_comments=False)
+
+	return escaped_html
+
+def is_json(text):
+	try:
+		json.loads(text)
+
+	except ValueError:
+		return False
+
+	else:
+		return True
+
+def markdown(text, sanitize=True):
+	html = _markdown(text)
+
+	if sanitize:
+		html = html.replace("<!-- markdown -->", "")
+		html = sanitize_html(html)
+
+	return html
+
+def sanitize_email(emails):
+	from email.utils import parseaddr, formataddr
+
+	sanitized = []
+	for e in split_emails(emails):
+		if not validate_email_add(e):
+			continue
+
+		fullname, email_id = parseaddr(e)
+		sanitized.append(formataddr((fullname, email_id)))
+
+	return ", ".join(sanitized)
